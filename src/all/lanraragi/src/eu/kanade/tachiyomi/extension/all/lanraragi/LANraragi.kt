@@ -82,9 +82,14 @@ abstract class LANraragi :
         }
         .addNetworkInterceptor { chain ->
             val response = chain.proceed(chain.request())
-            val statsPath = "${baseUrl.toHttpUrl().encodedPath.trimEnd('/')}/api/database/stats"
-            if (response.isSuccessful && chain.request().url.encodedPath == statsPath) {
-                response.newBuilder().header("Cache-Control", "private, max-age=300").build()
+            val serverPath = baseUrl.toHttpUrl().encodedPath.trimEnd('/')
+            val statsPath = "$serverPath/api/database/stats"
+            val isLatest = chain.request().url.encodedPath == "$serverPath/api/search" &&
+                chain.request().url.queryParameter("sortby") == "date_added" &&
+                chain.request().url.queryParameter("filter") == null
+            if (response.isSuccessful && (chain.request().url.encodedPath == statsPath || isLatest)) {
+                val maxAge = if (isLatest) 60 else 300
+                response.newBuilder().header("Cache-Control", "private, max-age=$maxAge").build()
             } else {
                 response
             }
@@ -103,16 +108,17 @@ abstract class LANraragi :
 
     override suspend fun getLatestUpdates(page: Int): MangasPage {
         val start = if (page == 1) 0 else (page - 1) * latestPageSize
+        // A series: wildcard makes the server expand every series index before paging.
         val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
-            .addQueryParameter("filter", "series:")
             .addQueryParameter("groupby_tanks", "false")
             .addQueryParameter("sortby", "date_added")
             .addQueryParameter("order", "desc")
             .addQueryParameter("start", start.toString())
             .build()
-        val result = client.get(url, Fetch.XHR, CacheControl.FORCE_NETWORK).parseAs<ArchiveSearchResult>()
+        val result = client.get(url, Fetch.XHR).parseAs<ArchiveSearchResult>()
         if (page == 1) latestPageSize = result.data.size
-        val series = result.data.map { archiveToSManga(it) }.distinctBy { it.url }
+        val series = result.data.filter { namespaceTagValues(it.tags, listOf("series")) != null }
+            .map { archiveToSManga(it) }.distinctBy { it.url }
         return MangasPage(series, result.data.isNotEmpty() && start + result.data.size < (result.recordsFiltered ?: result.recordsTotal))
     }
 
