@@ -7,12 +7,44 @@ plugins {
 keiyoushi {
     name = "Personal LANraragi"
     pkgName = "all.personallanraragi"
-    versionCode = 9
+    versionCode = 10
     contentWarning = ContentWarning.SAFE
     libVersion = "1.6"
 
     source {
         name = "Personal LANraragi"
+        lang = "all"
+        baseUrl {
+            custom("http://127.0.0.1:3000")
+        }
+    }
+
+    source {
+        name = "Personal LANraragi NAS1"
+        lang = "all"
+        baseUrl {
+            custom("http://127.0.0.1:3000")
+        }
+    }
+
+    source {
+        name = "Personal LANraragi NAS2"
+        lang = "all"
+        baseUrl {
+            custom("http://127.0.0.1:3000")
+        }
+    }
+
+    source {
+        name = "Personal LANraragi Net1"
+        lang = "all"
+        baseUrl {
+            custom("http://127.0.0.1:3000")
+        }
+    }
+
+    source {
+        name = "Personal LANraragi Net2"
         lang = "all"
         baseUrl {
             custom("http://127.0.0.1:3000")
