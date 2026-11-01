@@ -1,0 +1,17 @@
+.gradle
+/local.properties
+/.idea/workspace.xml
+.DS_Store
+build/
+/captures
+.idea/
+*.iml
+repo/
+apk/
+gen
+generated-src/
+.kotlin
+*.jks
+/signingkey.password
+/signingkey.cer
+/release/

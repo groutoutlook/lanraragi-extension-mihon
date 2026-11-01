@@ -1,0 +1,97 @@
+name: Publish Personal LANraragi
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/all/lanraragi/**'
+      - 'core/**'
+      - 'compiler/**'
+      - 'common/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'scripts/**'
+      - '.github/workflows/build_push.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-personal-lanraragi
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository != 'keiyoushi/extensions-source'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ALIAS: ${{ secrets.ALIAS }}
+      KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: 25
+          distribution: temurin
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: false
+      - name: Restore stable signing key
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if (-not $env:SIGNING_KEY -or -not $env:ALIAS -or -not $env:KEY_STORE_PASSWORD -or -not $env:KEY_PASSWORD) {
+            throw 'Run scripts/Initialize-Publishing.ps1 to configure signing secrets first.'
+          }
+          [IO.File]::WriteAllBytes('signingkey.jks', [Convert]::FromBase64String($env:SIGNING_KEY))
+      - name: Format, build, and lint Personal LANraragi
+        run: |
+          chmod +x ./gradlew
+          if ($LASTEXITCODE -ne 0) { throw 'Could not make Gradle executable.' }
+          ./gradlew spotlessApply
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed.' }
+          ./gradlew :src:all:lanraragi:assembleRelease :src:all:lanraragi:lintRelease
+          if ($LASTEXITCODE -ne 0) { throw 'Build or release lint failed.' }
+      - name: Generate extension indexes
+        id: index
+        run: |
+          keytool -exportcert -keystore signingkey.jks -storepass:env KEY_STORE_PASSWORD -alias $env:ALIAS -file signingkey.cer
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the signing certificate.' }
+          $fingerprint = (Get-FileHash signingkey.cer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $tag = "lanraragi-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+          $apk = @(Get-ChildItem 'src/all/lanraragi/build/outputs/apk/release/*.apk')
+          $jar = @(Get-ChildItem 'src/all/lanraragi/build/outputs/jar/release/*.jar')
+          if ($apk.Count -ne 1 -or $jar.Count -ne 1) { throw 'Expected exactly one APK and JAR.' }
+          ./scripts/New-ExtensionIndex.ps1 -MetadataPath src/all/lanraragi/build/keiyoushi-source-info.json -ApkPath $apk[0].FullName -JarPath $jar[0].FullName -Repository $env:GITHUB_REPOSITORY -Tag $tag -SigningKey $fingerprint
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "## Install in Mihon`n`nhttps://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/index.pb" >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: personal-lanraragi
+          path: release/*
+          if-no-files-found: error
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.index.outputs.tag }}
+        run: |
+          $assets = @(Get-ChildItem release -File | ForEach-Object FullName)
+          gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest --title "Personal LANraragi $env:RELEASE_TAG" --notes "Install in Mihon using https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/index.pb"
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
+      - name: Remove signing material
+        if: always()
+        run: |
+          Remove-Item -LiteralPath signingkey.jks, signingkey.cer -Force -ErrorAction SilentlyContinue
