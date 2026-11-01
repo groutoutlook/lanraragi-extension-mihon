@@ -7,7 +7,7 @@ plugins {
 keiyoushi {
     name = "Personal LANraragi"
     pkgName = "all.personallanraragi"
-    versionCode = 7
+    versionCode = 8
     contentWarning = ContentWarning.SAFE
     libVersion = "1.6"
 
@@ -30,6 +30,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.stdlib)
     testImplementation(libs.kotlin.json)
+    testImplementation(libs.okhttp.core)
+    testImplementation(libs.tachiyomi.lib.v16)
 }
 
 // Unit tests use the source class already generated for the main variant.

@@ -7,7 +7,6 @@ import android.util.Base64
 import android.widget.Toast
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.UnmeteredSource
-import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -24,6 +23,7 @@ import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonElement
 import kotlinx.serialization.json.JsonElement
 import okhttp3.CacheControl
 import okhttp3.Dns
@@ -119,13 +119,14 @@ abstract class LANraragi :
         if (page == 1) latestPageSize = result.data.size
         val series = result.data.filter { namespaceTagValues(it.tags, listOf("series")) != null }
             .map { archiveToSManga(it) }.distinctBy { it.url }
-        return MangasPage(series, result.data.isNotEmpty() && start + result.data.size < (result.recordsFiltered ?: result.recordsTotal))
+        return MangasPage(series, result.hasNextPage(start))
     }
 
     override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
+        if (query.isNotBlank() || filters.hasArchiveFilters()) return getFilteredManga(page, query, filters)
         val cacheControl = if (page == 1 && query.isBlank()) CacheControl.FORCE_NETWORK else DEFAULT_CACHE_CONTROL
         val tags = client.get("$baseUrl/api/database/stats", Fetch.XHR, cacheControl).parseAs<List<DatabaseTag>>()
-        val catalog = seriesCatalogPage(tags, page, query, filters.firstInstanceOrNull<SeriesSort>()?.state == 1)
+        val catalog = seriesCatalogPage(tags, page + filters.startingPage() - 1, query, filters.firstInstanceOrNull<SortSelect>()?.toUriPart() == "desc")
         val series = catalog.titles.map { name ->
             SManga.create().apply {
                 url = seriesUrl(name)
@@ -138,6 +139,25 @@ abstract class LANraragi :
             }
         }
         return MangasPage(series, catalog.hasNextPage)
+    }
+
+    private var searchPageSize = 0
+
+    private suspend fun getFilteredManga(page: Int, query: String, filters: FilterList): MangasPage {
+        val random = filters.isRandom()
+        var start = if (page == 1) 0 else (page + filters.startingPage() - 2) * searchPageSize
+        val cacheControl = if (page == 1) CacheControl.FORCE_NETWORK else DEFAULT_CACHE_CONTROL
+        var result = client.get(filters.archiveSearchUrl(baseUrl, query, start), Fetch.XHR, cacheControl).parseAs<ArchiveSearchResult>()
+        if (page == 1) {
+            searchPageSize = result.data.size
+            if (!random && filters.startingPage() > 1 && searchPageSize > 0) {
+                // LANraragi sets page size on the server, so discover it before skipping pages.
+                start = (filters.startingPage() - 1) * searchPageSize
+                if (start >= (result.recordsFiltered ?: result.recordsTotal)) return MangasPage(emptyList(), false)
+                result = client.get(filters.archiveSearchUrl(baseUrl, query, start), Fetch.XHR, cacheControl).parseAs<ArchiveSearchResult>()
+            }
+        }
+        return MangasPage(result.data.map { archiveToSManga(it) }.distinctBy { it.url }, !random && result.hasNextPage(start))
     }
 
     private fun archiveToSManga(archive: Archive) = SManga.create().apply {
@@ -331,9 +351,13 @@ abstract class LANraragi :
         }
     }
 
-    private class SeriesSort : Filter.Select<String>("Series order", arrayOf("A–Z", "Z–A"))
+    override val supportsFilterFetching get() = true
 
-    override fun getFilterList(data: JsonElement?) = FilterList(SeriesSort())
+    override suspend fun fetchFilterData(): JsonElement = client.get("$baseUrl/api/categories", Fetch.XHR)
+        .parseAs<List<Category>>()
+        .toJsonElement()
+
+    override fun getFilterList(data: JsonElement?) = sourceFilters(data?.parseAs<List<Category>>().orEmpty())
 
     // Preferences
     internal val preferences: SharedPreferences by getPreferencesLazy()
