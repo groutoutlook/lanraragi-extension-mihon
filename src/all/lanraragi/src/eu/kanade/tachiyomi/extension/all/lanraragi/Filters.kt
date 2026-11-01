@@ -6,14 +6,15 @@ import keiyoushi.utils.firstInstanceOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
-internal class CategorySelect(categories: List<Category>) : UriPartFilter(
-    "Category",
-    listOf("" to "").plus(
-        categories.sortedWith(compareByDescending<Category> { it.pinned }.thenBy { it.name }).map {
-            it.id to "${if (it.pinned == 1) "📌 " else ""}${it.name.orEmpty()}"
-        },
-    ).toTypedArray(),
-)
+internal class CategorySelect(categories: List<Category>) :
+    UriPartFilter(
+        "Category",
+        listOf("" to "").plus(
+            categories.sortedWith(compareByDescending<Category> { it.pinned }.thenBy { it.name }).map {
+                it.id to "${if (it.pinned == 1) "📌 " else ""}${it.name.orEmpty()}"
+            },
+        ).toTypedArray(),
+    )
 
 internal class SortSelect : UriPartFilter("Sort order", arrayOf("asc" to "Ascending", "desc" to "Descending", "random" to "Random"))
 internal class NewArchivesOnly : Filter.CheckBox("New Archives only", false)
@@ -23,8 +24,7 @@ internal class GroupByTanks : Filter.CheckBox("Group by Tankoubon", false)
 internal class StartingPage : Filter.Text("Starting page", "")
 internal class SortByNamespace : Filter.Text("Sort by (namespace)", "")
 
-internal open class UriPartFilter(displayName: String, private val choices: Array<Pair<String, String>>) :
-    Filter.Select<String>(displayName, choices.map { it.second }.toTypedArray()) {
+internal open class UriPartFilter(displayName: String, private val choices: Array<Pair<String, String>>) : Filter.Select<String>(displayName, choices.map { it.second }.toTypedArray()) {
     fun toUriPart(): String = choices[state].first
 }
 
