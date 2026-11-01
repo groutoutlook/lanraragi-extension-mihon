@@ -3,6 +3,12 @@ package eu.kanade.tachiyomi.extension.all.lanraragi
 import kotlinx.serialization.Serializable
 
 @Serializable
+class DatabaseTag(
+    val text: String,
+    val namespace: String? = null,
+)
+
+@Serializable
 class Archive(
     val arcid: String,
     val title: String,
@@ -27,7 +33,7 @@ class ArchivePage(
 @Serializable
 class ArchiveSearchResult(
     val data: List<Archive>,
-    val recordsFiltered: Int?,
+    val recordsFiltered: Int? = null,
     val recordsTotal: Int,
 )
 
