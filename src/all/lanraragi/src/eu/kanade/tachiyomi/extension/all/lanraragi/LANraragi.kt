@@ -5,7 +5,6 @@ import android.net.Uri
 import android.text.InputType
 import android.util.Base64
 import android.widget.Toast
-import androidx.preference.ListPreference
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.UnmeteredSource
 import eu.kanade.tachiyomi.source.model.Filter
@@ -16,6 +15,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.DEFAULT_CACHE_CONTROL
 import keiyoushi.network.Fetch
 import keiyoushi.network.call
 import keiyoushi.network.fetch
@@ -24,7 +24,6 @@ import keiyoushi.source.KeiSource
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.toJsonElement
 import kotlinx.serialization.json.JsonElement
 import okhttp3.CacheControl
 import okhttp3.Dns
@@ -35,7 +34,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.net.URL
-import kotlin.math.max
 
 @Source
 abstract class LANraragi :
@@ -52,19 +50,44 @@ abstract class LANraragi :
         buildNamespaceCandidates(AUTHOR_NAMESPACE, getPrefAuthorNamespaces())
     }
 
-    private val latestNamespacePref by lazy { getPrefLatestNS() }
-
-    private val latestSortOrderPref by lazy { getPrefLatestSortOrder() }
-
-    private val randomPageSizePref by lazy { getPrefRandomPageSize() }
-
     private var randomArchiveID: String = ""
 
     override fun OkHttpClient.Builder.configureClient() = dns(Dns.SYSTEM)
         .addInterceptor { chain ->
-            val response = chain.proceed(chain.request())
-            if (response.code == 401) throw IOException("If the server is in No-Fun Mode make sure the extension's API Key is correct.")
+            var request = chain.request()
+            val serverPath = baseUrl.toHttpUrl().encodedPath.trimEnd('/')
+            if (request.url.encodedPath == "$serverPath$SERIES_COVER_PATH") {
+                val series = request.url.queryParameter("title")!!
+                val searchUrl = "$baseUrl/api/search/random".toHttpUrl().newBuilder()
+                    .addQueryParameter("filter", seriesFilter(series))
+                    .addQueryParameter("groupby_tanks", "false")
+                    .addQueryParameter("count", "1")
+                    .build()
+                val search = chain.proceed(request.newBuilder().url(searchUrl).fetch(Fetch.XHR).build())
+                if (!search.isSuccessful) {
+                    val code = search.code
+                    search.close()
+                    throw IOException("Could not load series cover: HTTP $code")
+                }
+                val archive = search.parseAs<ArchiveSearchResult>().data.firstOrNull()
+                    ?: throw IOException("No cover available for this series.")
+                request = request.newBuilder().url(getThumbnailUri(archive.arcid)).build()
+            }
+            val response = chain.proceed(request)
+            if (response.code == 401) {
+                response.close()
+                throw IOException("If the server is in No-Fun Mode make sure the extension's API Key is correct.")
+            }
             response
+        }
+        .addNetworkInterceptor { chain ->
+            val response = chain.proceed(chain.request())
+            val statsPath = "${baseUrl.toHttpUrl().encodedPath.trimEnd('/')}/api/database/stats"
+            if (response.isSuccessful && chain.request().url.encodedPath == statsPath) {
+                response.newBuilder().header("Cache-Control", "private, max-age=300").build()
+            } else {
+                response
+            }
         }
 
     override fun Headers.Builder.configureHeaders() = apply {
@@ -76,120 +99,42 @@ abstract class LANraragi :
 
     override suspend fun getPopularManga(page: Int): MangasPage = getSearchMangaList(page, "", FilterList())
 
+    private var latestPageSize = 0
+
     override suspend fun getLatestUpdates(page: Int): MangasPage {
-        val filters = mutableListOf<Filter<*>>()
-        val prefNewOnly = preferences.getBoolean(NEW_ONLY_KEY, NEW_ONLY_DEFAULT)
-
-        if (prefNewOnly) filters.add(NewArchivesOnly(true))
-
-        if (latestNamespacePref.isNotBlank()) {
-            filters.add(SortByNamespace(latestNamespacePref))
-        }
-
-        filters.add(SortSelect(sortOrders.filter { it.first == latestSortOrderPref }.toTypedArray()))
-
-        return getSearchMangaList(page, "", FilterList(filters))
+        val start = if (page == 1) 0 else (page - 1) * latestPageSize
+        val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
+            .addQueryParameter("filter", "series:")
+            .addQueryParameter("groupby_tanks", "false")
+            .addQueryParameter("sortby", "date_added")
+            .addQueryParameter("order", "desc")
+            .addQueryParameter("start", start.toString())
+            .build()
+        val result = client.get(url, Fetch.XHR, CacheControl.FORCE_NETWORK).parseAs<ArchiveSearchResult>()
+        if (page == 1) latestPageSize = result.data.size
+        val series = result.data.map { archiveToSManga(it) }.distinctBy { it.url }
+        return MangasPage(series, result.data.isNotEmpty() && start + result.data.size < (result.recordsFiltered ?: result.recordsTotal))
     }
-
-    private var lastResultCount: Int = 0
-    private var lastRecordsFiltered: Int = 0
-    private var maxResultCount: Int = 0
-    private var totalRecords: Int = 0
 
     override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
-        val uri = getApiUriBuilder("/api/search")
-        var startPageOffset = 0
-        val isRandom = filters.firstInstanceOrNull<SortSelect>()?.toUriPart() == "random"
-
-        if (page == 1) {
-            lastResultCount = 0
-        }
-
-        filters.forEach { filter ->
-            when (filter) {
-                is StartingPage -> {
-                    startPageOffset = filter.state.toIntOrNull() ?: 1
-
-                    // Exception for API wrapping around and user input of 0
-                    if (startPageOffset > 0) {
-                        startPageOffset -= 1
-                    }
-                }
-
-                is NewArchivesOnly -> if (filter.state) uri.appendQueryParameter("newonly", "true")
-
-                is UntaggedArchivesOnly -> if (filter.state) uri.appendQueryParameter("untaggedonly", "true")
-
-                is HideCompleted -> if (filter.state) uri.appendQueryParameter("hidecompleted", "true")
-
-                is SortByNamespace -> if (!isRandom && filter.state.isNotEmpty()) uri.appendQueryParameter("sortby", filter.state.trim())
-
-                is CategorySelect -> if (filter.state > 0) uri.appendQueryParameter("category", filter.toUriPart())
-
-                is SortSelect -> {
-                    if (filter.toUriPart() == "random") {
-                        uri.appendPath("random")
-                        uri.appendQueryParameter("count", randomPageSizePref)
-                    } else {
-                        uri.appendQueryParameter("order", filter.toUriPart())
-                    }
-                }
-
-                else -> {}
+        val cacheControl = if (page == 1 && query.isBlank()) CacheControl.FORCE_NETWORK else DEFAULT_CACHE_CONTROL
+        val tags = client.get("$baseUrl/api/database/stats", Fetch.XHR, cacheControl).parseAs<List<DatabaseTag>>()
+        val catalog = seriesCatalogPage(tags, page, query, filters.firstInstanceOrNull<SeriesSort>()?.state == 1)
+        val series = catalog.titles.map { name ->
+            SManga.create().apply {
+                url = seriesUrl(name)
+                title = name
+                thumbnail_url = "$baseUrl$SERIES_COVER_PATH".toHttpUrl().newBuilder()
+                    .addQueryParameter("title", name)
+                    .build()
+                    .toString()
+                status = SManga.UNKNOWN
             }
         }
-
-        uri.appendQueryParameter("groupby_tanks", (filters.firstInstanceOrNull<GroupByTanks>()?.state ?: true).toString())
-
-        if (query.isNotEmpty()) {
-            uri.appendQueryParameter("filter", query)
-        }
-
-        val searchUrl = uri.toString().toHttpUrl()
-        // Group the complete result before paging, so chapters on different server pages
-        // cannot become duplicate series or leave a page empty after deduplication.
-        val results = if (isRandom) {
-            client.get(searchUrl, headers, Fetch.XHR, CacheControl.FORCE_NETWORK).parseAs<ArchiveSearchResult>().data
-        } else {
-            fetchArchives(searchUrl)
-        }
-        val grouped = results.map { archiveToSManga(it, isRandom && page > 1) }.distinctBy { it.url }
-        val currentStart = (page - 1 + startPageOffset) * SERIES_PAGE_SIZE
-        val visible = if (isRandom) grouped else grouped.drop(currentStart).take(SERIES_PAGE_SIZE)
-        val archives = arrayListOf<SManga>()
-
-        lastResultCount = visible.size
-        maxResultCount = max(lastResultCount, maxResultCount)
-        lastRecordsFiltered = grouped.size
-        totalRecords = grouped.size
-
-        var hasNext = isRandom || currentStart + lastResultCount < lastRecordsFiltered
-
-        // Random has no paging; applying the filter again gives a new batch
-        if (isRandom && page > 1 && !preferences.getBoolean(REDUPE_KEY, REDUPE_DEFAULT)) {
-            hasNext = false
-        }
-
-        if (page == 1 && lastResultCount > 1 && preferences.getBoolean(RANDOM_ENTRY_SHOW_KEY, RANDOM_ENTRY_SHOW_DEFAULT)) {
-            val randQuery = searchUrl.query.toString()
-            randomArchiveID = getRandomID(randQuery)
-
-            archives.add(
-                SManga.create().apply {
-                    url = "/api/search/random?count=1&$randQuery"
-                    title = "Random"
-                    description = "Refresh for a random archive."
-                    thumbnail_url = getThumbnailUri("0".repeat(40))
-                },
-            )
-        }
-
-        archives.addAll(visible)
-
-        return MangasPage(archives, hasNext)
+        return MangasPage(series, catalog.hasNextPage)
     }
 
-    private fun archiveToSManga(archive: Archive, isRandom: Boolean = false) = SManga.create().apply {
+    private fun archiveToSManga(archive: Archive) = SManga.create().apply {
         val series = archive.seriesTitle()
         val (artistName, authorName) = parseMangaCredits(
             archive.tags,
@@ -198,7 +143,6 @@ abstract class LANraragi :
         )
 
         url = series?.let { seriesUrl(it) } ?: "/reader?id=${archive.arcid}"
-        if (isRandom && preferences.getBoolean(REDUPE_KEY, REDUPE_DEFAULT)) url += "&ts" + System.currentTimeMillis()
         title = series ?: archive.title
         description = if (archive.summary.isNullOrBlank()) archive.title else archive.summary
         thumbnail_url = getThumbnailUri(archive.arcid)
@@ -208,25 +152,16 @@ abstract class LANraragi :
         status = if (series == null) SManga.COMPLETED else SManga.UNKNOWN
     }
 
-    private suspend fun fetchArchives(url: HttpUrl): List<Archive> = buildList {
-        var start = 0
-        do {
-            val pageUrl = url.newBuilder().setQueryParameter("start", start.toString()).build()
-            val result = client.get(pageUrl, headers, Fetch.XHR, CacheControl.FORCE_NETWORK).parseAs<ArchiveSearchResult>()
-            addAll(result.data)
-            start += result.data.size
-        } while (result.data.isNotEmpty() && start < (result.recordsFiltered ?: result.recordsTotal))
-    }
-
-    private suspend fun fetchSeries(series: String): List<Archive> = fetchArchives(
-        Uri.parse("$baseUrl/api/search").buildUpon()
-            .appendQueryParameter("filter", series)
-            .appendQueryParameter("groupby_tanks", "false")
+    private suspend fun fetchSeries(series: String): List<Archive> {
+        val url = "$baseUrl/api/search".toHttpUrl().newBuilder()
+            .addQueryParameter("filter", seriesFilter(series))
+            .addQueryParameter("groupby_tanks", "false")
+            .addQueryParameter("start", "-1")
             .build()
-            .toString()
-            .toHttpUrl(),
-    ).filter { it.seriesTitle()?.equals(series, ignoreCase = true) == true }
-        .sortedBy { it.chapterNumber() ?: Float.MAX_VALUE }
+        return client.get(url, Fetch.XHR, CacheControl.FORCE_NETWORK).parseAs<ArchiveSearchResult>().data
+            .filter { it.seriesTitle()?.equals(series, ignoreCase = true) == true }
+            .sortedBy { it.chapterNumber() ?: Float.MAX_VALUE }
+    }
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         val server = baseUrl.toHttpUrl()
@@ -390,81 +325,20 @@ abstract class LANraragi :
         }
     }
 
-    private class CategorySelect(categories: Array<Pair<String, String>>) : UriPartFilter("Category", categories)
-    private class SortSelect(sortOrders: Array<Pair<String, String>>) : UriPartFilter("Sort order", sortOrders)
-    private class NewArchivesOnly(overrideState: Boolean = false) : Filter.CheckBox("New Archives only", overrideState)
-    private class UntaggedArchivesOnly : Filter.CheckBox("Untagged Archives only", false)
-    private class HideCompleted : Filter.CheckBox("Hide Completed", false)
-    private class GroupByTanks : Filter.CheckBox("Group by Tankoubon", true)
-    private class StartingPage(stats: String) : Filter.Text("Starting page$stats", "")
-    private class SortByNamespace(defaultText: String = "") : Filter.Text("Sort by (namespace)", defaultText)
+    private class SeriesSort : Filter.Select<String>("Series order", arrayOf("A–Z", "Z–A"))
 
-    override val supportsFilterFetching get() = true
-
-    override suspend fun fetchFilterData(): JsonElement = client.get("$baseUrl/api/categories", Fetch.XHR)
-        .parseAs<List<Category>>()
-        .toJsonElement()
-
-    override fun getFilterList(data: JsonElement?) = FilterList(
-        CategorySelect(getCategoryPairs(data?.parseAs<List<Category>>().orEmpty())),
-        SortSelect(sortOrders),
-        NewArchivesOnly(),
-        UntaggedArchivesOnly(),
-        HideCompleted(),
-        GroupByTanks(),
-        StartingPage(startingPageStats()),
-        SortByNamespace(),
-    )
-
-    private val sortOrders = arrayOf(Pair("asc", "Ascending"), Pair("desc", "Descending"), Pair("random", "Random"))
+    override fun getFilterList(data: JsonElement?) = FilterList(SeriesSort())
 
     // Preferences
     internal val preferences: SharedPreferences by getPreferencesLazy()
 
     private fun getPrefAPIKey(): String = preferences.getString(APIKEY_KEY, "")!!
-    private fun getPrefLatestNS(): String = preferences.getString(SORT_BY_NS_KEY, SORT_BY_NS_DEFAULT)!!
-    private fun getPrefLatestSortOrder(): String = preferences.getString(SORT_ORDER_KEY, SORT_ORDER_DEFAULT)!!
-    private fun getPrefRandomPageSize(): String = preferences.getString(RANDOM_SIZE_KEY, RANDOM_SIZE_DEFAULT)!!
     private fun getPrefArtistNamespaces(): String = preferences.getString(ARTIST_NAMESPACES_KEY, ADDITIONAL_NAMESPACES_DEFAULT)!!
     private fun getPrefAuthorNamespaces(): String = preferences.getString(AUTHOR_NAMESPACES_KEY, ADDITIONAL_NAMESPACES_DEFAULT)!!
 
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
-        val randomPageSize = ListPreference(screen.context).apply {
-            key = RANDOM_SIZE_KEY
-            title = "Random Sort - Pagination amount"
-            entries = arrayOf("25", "50", "100", "250", "1000")
-            entryValues = entries
-            setDefaultValue(RANDOM_SIZE_DEFAULT)
-            summary = "Request %s entries at a time in Random sort order. Lower may be more responsive while higher may be less disruptive.\n\n\"Ignore dedupe\" must be enabled for infinite/doomscrolling."
-
-            setOnPreferenceChangeListener { _, _ ->
-                Toast.makeText(screen.context, "Restart app to apply new setting.", Toast.LENGTH_LONG).show()
-                true
-            }
-        }
-
-        val latestSortOrder = ListPreference(screen.context).apply {
-            key = SORT_ORDER_KEY
-            title = "Latest - Default Sort Order"
-            entries = sortOrders.map { it.second }.toTypedArray()
-            entryValues = sortOrders.map { it.first }.toTypedArray()
-            setDefaultValue(SORT_ORDER_DEFAULT)
-            summary = "%s"
-
-            setOnPreferenceChangeListener { _, _ ->
-                Toast.makeText(screen.context, "Restart app to apply new setting.", Toast.LENGTH_LONG).show()
-                true
-            }
-        }
-
         screen.addPreference(screen.editTextPreference(APIKEY_KEY, "API Key", "", "Required if No-Fun Mode is enabled.", true))
-        screen.addPreference(screen.checkBoxPreference(RANDOM_ENTRY_SHOW_KEY, "Show Random entry", RANDOM_ENTRY_SHOW_DEFAULT, "The first item of a search will be a special entry for a single random archive. Pull down to \"refresh\" and get a new one.\n\nLibrary functionality is limited. It is recommend to start a search within this entry to get to the original."))
         screen.addPreference(screen.checkBoxPreference(CLEAR_NEW_KEY, "Clear New status", CLEAR_NEW_DEFAULT, "Clear an entry's New status when its details are viewed."))
-        screen.addPreference(screen.checkBoxPreference(NEW_ONLY_KEY, "Latest - New Only", NEW_ONLY_DEFAULT))
-        screen.addPreference(screen.editTextPreference(SORT_BY_NS_KEY, "Latest - Sort by Namespace", SORT_BY_NS_DEFAULT, "Sort by the given namespace for Latest, such as date_added or lastread."))
-        screen.addPreference(latestSortOrder)
-        screen.addPreference(randomPageSize)
-        screen.addPreference(screen.checkBoxPreference(REDUPE_KEY, "Random Sort - Ignore dedupe", REDUPE_DEFAULT, "If enabled, ignores app's enforced deduping at the cost of spamming its database and library functionality. If disabled, there will only be one request of the pagination amount."))
         screen.addPreference(
             screen.editTextPreference(
                 ARTIST_NAMESPACES_KEY,
@@ -557,29 +431,6 @@ abstract class LANraragi :
         return result.data.firstOrNull()?.arcid ?: randomArchiveID
     }
 
-    open class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>) : Filter.Select<String>(displayName, vals.map { it.second }.toTypedArray()) {
-        fun toUriPart() = vals[state].first
-    }
-
-    private fun getCategoryPairs(categories: List<Category>): Array<Pair<String, String>> {
-        // Empty pair to disable. Sort by pinned status then name for convenience.
-
-        val pin = "📌 "
-
-        return listOf(Pair("", ""))
-            .plus(
-                categories
-                    .sortedWith(compareByDescending<Category> { it.pinned }.thenBy { it.name })
-                    .map {
-                        val pinned = if (it.pinned == 1) pin else ""
-                        Pair(it.id, "$pinned${it.name}")
-                    },
-            )
-            .toTypedArray()
-    }
-
-    private fun startingPageStats(): String = if (maxResultCount > 0 && totalRecords > 0) " ($maxResultCount / $lastRecordsFiltered items)" else ""
-
     private fun getApiUriBuilder(path: String): Uri.Builder = Uri.parse("$baseUrl$path").buildUpon()
 
     private fun getThumbnailUri(id: String): String {
@@ -604,21 +455,8 @@ abstract class LANraragi :
         private const val AUTHOR_NAMESPACES_KEY = "authorNamespacePref"
         private const val ADDITIONAL_NAMESPACES_DEFAULT = ""
 
-        private const val SERIES_PAGE_SIZE = 50
+        private const val SERIES_COVER_PATH = "/api/series-cover"
 
-        // mihonapp/mihon#2176
-        private const val REDUPE_KEY = "redupePref"
-        private const val REDUPE_DEFAULT = false
-        private const val NEW_ONLY_DEFAULT = true
-        private const val NEW_ONLY_KEY = "latestNewOnly"
-        private const val SORT_BY_NS_DEFAULT = "date_added"
-        private const val SORT_BY_NS_KEY = "latestNamespacePref"
-        private const val SORT_ORDER_DEFAULT = "desc"
-        private const val SORT_ORDER_KEY = "latestSortOrder"
-        private const val RANDOM_ENTRY_SHOW_KEY = "showRandomEntry"
-        private const val RANDOM_ENTRY_SHOW_DEFAULT = false
-        private const val RANDOM_SIZE_DEFAULT = "100"
-        private const val RANDOM_SIZE_KEY = "randomPageSize"
         private const val CLEAR_NEW_KEY = "clearNew"
         private const val CLEAR_NEW_DEFAULT = true
         private const val URL_TAG_PREFIX_KEY = "urlTagPrefix"

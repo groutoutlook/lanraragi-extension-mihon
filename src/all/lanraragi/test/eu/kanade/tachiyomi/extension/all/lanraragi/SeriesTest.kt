@@ -7,18 +7,18 @@ import org.junit.Test
 class SeriesTest {
     @Test
     fun `series and chapter tags take precedence over filenames`() {
-        val archive = archive("Yogurt Lady (Official)_c057", "series:Yogurt Lady, chapter:056, official")
+        val archive = archive("Example Series (Official)_c057", "series:Example Series, chapter:056, official")
 
-        assertEquals("Yogurt Lady", archive.seriesTitle())
+        assertEquals("Example Series", archive.seriesTitle())
         assertEquals(56F, archive.chapterNumber())
         assertEquals("Official", archive.chapterEdition())
     }
 
     @Test
     fun `tagged archives do not need chapter suffixes`() {
-        val archive = archive("An unrelated filename", "series:I Can Buy Anything, chapter:074, uncensored")
+        val archive = archive("An unrelated filename", "series:Another Series, chapter:074, uncensored")
 
-        assertEquals("I Can Buy Anything", archive.seriesTitle())
+        assertEquals("Another Series", archive.seriesTitle())
         assertEquals(74F, archive.chapterNumber())
         assertEquals("Uncensored", archive.chapterEdition())
     }
@@ -26,13 +26,13 @@ class SeriesTest {
     @Test
     fun `editions share a series without losing either archive`() {
         val archives = listOf(
-            archive("Yogurt Lady (Official)_c057", "series:Yogurt Lady, chapter:057, official"),
-            archive("Yogurt Lady_c057", "series:Yogurt Lady, chapter:057, uncensored"),
+            archive("Example Series (Official)_c057", "series:Example Series, chapter:057, official"),
+            archive("Example Series_c057", "series:Example Series, chapter:057, uncensored"),
         )
         val grouped = archives.groupBy { it.seriesTitle() }
 
-        assertEquals(setOf("Yogurt Lady"), grouped.keys)
-        assertEquals(2, grouped.getValue("Yogurt Lady").size)
+        assertEquals(setOf("Example Series"), grouped.keys)
+        assertEquals(2, grouped.getValue("Example Series").size)
         assertEquals(listOf("Official", "Uncensored"), archives.map { it.chapterEdition() })
     }
 
@@ -47,9 +47,9 @@ class SeriesTest {
 
     @Test
     fun `tag namespaces and edition labels ignore case and whitespace`() {
-        val archive = archive("Filename", " Series : Yogurt Lady , CHAPTER : 057 , OFFICIAL ")
+        val archive = archive("Filename", " Series : Example Series , CHAPTER : 057 , OFFICIAL ")
 
-        assertEquals("Yogurt Lady", archive.seriesTitle())
+        assertEquals("Example Series", archive.seriesTitle())
         assertEquals(57F, archive.chapterNumber())
         assertEquals("Official", archive.chapterEdition())
     }
@@ -66,9 +66,9 @@ class SeriesTest {
 
     @Test
     fun `missing chapter tag falls back to filename`() {
-        val archive = archive("Yogurt Lady (Official)_c057", "series:Yogurt Lady, official")
+        val archive = archive("Example Series (Official)_c057", "series:Example Series, official")
 
-        assertEquals("Yogurt Lady", archive.seriesTitle())
+        assertEquals("Example Series", archive.seriesTitle())
         assertEquals(57F, archive.chapterNumber())
     }
 
@@ -79,9 +79,9 @@ class SeriesTest {
 
     @Test
     fun `series without a chapter number can still group`() {
-        val archive = archive("Special", "series:Yogurt Lady")
+        val archive = archive("Special", "series:Example Series")
 
-        assertEquals("Yogurt Lady", archive.seriesTitle())
+        assertEquals("Example Series", archive.seriesTitle())
         assertNull(archive.chapterNumber())
     }
 
@@ -98,7 +98,7 @@ class SeriesTest {
 
     @Test
     fun `tankoubons keep their existing identity`() {
-        val archive = archive("Collection_c001", "series:Yogurt Lady", "TANK_1234567890")
+        val archive = archive("Collection_c001", "series:Example Series", "TANK_1234567890")
 
         assertNull(archive.seriesTitle())
     }

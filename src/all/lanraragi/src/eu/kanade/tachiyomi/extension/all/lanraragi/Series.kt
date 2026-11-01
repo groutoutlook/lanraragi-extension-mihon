@@ -34,4 +34,4 @@ internal fun Archive.chapterEdition(): String? = tags?.split(',')
     ?.takeIf { it.isNotEmpty() }
     ?.joinToString()
 
-internal fun seriesUrl(series: String): String = "/series?title=${Uri.encode(series)}"
+internal fun seriesUrl(series: String): String = "/series?title=${Uri.encode(series.lowercase())}"
