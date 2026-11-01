@@ -1,6 +1,6 @@
 # Personal LANraragi
 
-A personal Mihon extension that groups chapter archives into series. `69 University_c001.zip` through `69 University_c035.zip` appear as **69 University**, with 35 numbered chapters. Existing LANraragi tankoubons still work.
+A personal Mihon extension that groups chapter archives into series.
 
 ![Personal LANraragi icon](src/all/lanraragi/res/mipmap-xhdpi/ic_launcher.png)
 
