@@ -36,8 +36,6 @@ try {
 } finally {
     $env:KEY_STORE_PASSWORD = $oldPassword
 }
-gh repo edit $Repository --visibility public --accept-visibility-change-consequences
-if ($LASTEXITCODE -ne 0) { throw 'Could not set public repository visibility.' }
 gh workflow run build_push.yml --repo $Repository --ref main
 if ($LASTEXITCODE -ne 0) { throw 'Could not start the publishing workflow.' }
 Write-Output "After the workflow succeeds, add this URL in Mihon: https://github.com/$Repository/releases/latest/download/index.pb"
