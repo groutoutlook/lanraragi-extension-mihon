@@ -15,14 +15,16 @@ jobs:
         with:
           java-version: 25
           distribution: temurin
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-      - name: Format, build, and lint
+      - name: Format, build, test, and lint
         shell: pwsh
         run: |
           chmod +x ./gradlew
           if ($LASTEXITCODE -ne 0) { throw 'Could not make Gradle executable.' }
-          ./gradlew spotlessApply
+          ./gradlew :src:all:lanraragi:spotlessApply
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed.' }
-          ./gradlew :src:all:lanraragi:assembleDebug :src:all:lanraragi:lintRelease
-          if ($LASTEXITCODE -ne 0) { throw 'Build or release lint failed.' }
+          ./gradlew :src:all:lanraragi:assembleDebug :src:all:lanraragi:testDebugUnitTest :src:all:lanraragi:lintRelease
+          if ($LASTEXITCODE -ne 0) { throw 'Build, tests, or release lint failed.' }

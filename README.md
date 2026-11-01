@@ -23,9 +23,10 @@ This link becomes available only after publishing; editing files locally does no
 
 ## Grouping rules
 
-- Archive titles ending in `_c001`, `-c002`, ` ch. 3`, or ` Chapter 4.5` are grouped by the preceding title. An optional `.zip`, `.cbz`, `.rar`, `.cbr`, `.7z`, or `.pdf` suffix is accepted.
-- Chapter numbers come from these suffixes and are sorted numerically. Standalone archives remain separate entries. Unmarked titles ending only in a number are left alone.
-- Grouping uses the titles reported by LANraragi, so preserve the chapter suffix when importing files. The extension does not change server metadata or files. Loose image folders must first be imported in a format LANraragi supports.
+- Archives with the same `series:` tag are grouped under that series name. The `chapter:` tag supplies the chapter number, including decimals. These tags take precedence over archive titles, so `Yogurt Lady (Official)_c057` with `series:Yogurt Lady, chapter:057` appears under **Yogurt Lady** as **Chapter 57**.
+- `official` and `uncensored` tags label chapter editions in Mihon's scanlator field. Editions stay in the same series, and archives with the same chapter number remain separate readable chapters.
+- When tags are missing, archive titles ending in `_c001`, `-c002`, ` ch. 3`, or ` Chapter 4.5` supply the series name and chapter number. An optional `.zip`, `.cbz`, `.rar`, `.cbr`, `.7z`, or `.pdf` suffix is accepted. Chapters are sorted numerically; standalone archives and unmarked titles ending only in a number remain separate entries.
+- Grouping uses metadata reported by LANraragi and does not change server metadata or files. Loose image folders must first be imported in a format LANraragi supports.
 - Browsing collects all matching server pages before grouping to avoid splitting a series across pages. Large libraries may take longer to load. Opening a series searches for its matching archives again, so newly imported chapters appear on refresh.
 - This personal package has a different name, icon, package ID, and source ID from the standard extension. Existing library entries are not automatically migrated; use Mihon's migration feature or add the grouped entry yourself.
 

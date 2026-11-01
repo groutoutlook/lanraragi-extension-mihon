@@ -14,4 +14,24 @@ internal fun parseChapterTitle(title: String): ChapterTitle? {
     return ChapterTitle(match.groupValues[1], match.groupValues[2].toFloat())
 }
 
+internal fun Archive.seriesTitle(): String? {
+    if (arcid.startsWith("TANK_")) return null
+    return namespaceTagValues(tags, listOf("series"))?.firstOrNull() ?: parseChapterTitle(title)?.series
+}
+
+internal fun Archive.chapterNumber(): Float? = namespaceTagValues(tags, listOf("chapter"))?.firstOrNull()?.toFloatOrNull()
+    ?: parseChapterTitle(title)?.number
+
+internal fun Archive.chapterEdition(): String? = tags?.split(',')
+    ?.mapNotNull {
+        when (it.trim().lowercase()) {
+            "official" -> "Official"
+            "uncensored" -> "Uncensored"
+            else -> null
+        }
+    }
+    ?.distinct()
+    ?.takeIf { it.isNotEmpty() }
+    ?.joinToString()
+
 internal fun seriesUrl(series: String): String = "/series?title=${Uri.encode(series)}"

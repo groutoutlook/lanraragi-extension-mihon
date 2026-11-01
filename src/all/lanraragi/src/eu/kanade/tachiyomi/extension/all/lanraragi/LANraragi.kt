@@ -38,7 +38,8 @@ import java.net.URL
 import kotlin.math.max
 
 @Source
-abstract class LANraragi : KeiSource(),
+abstract class LANraragi :
+    KeiSource(),
     ConfigurableSource,
     UnmeteredSource {
     private val apiKey by lazy { getPrefAPIKey() }
@@ -189,22 +190,22 @@ abstract class LANraragi : KeiSource(),
     }
 
     private fun archiveToSManga(archive: Archive, isRandom: Boolean = false) = SManga.create().apply {
-        val chapterTitle = if (archive.arcid.startsWith("TANK_")) null else parseChapterTitle(archive.title)
+        val series = archive.seriesTitle()
         val (artistName, authorName) = parseMangaCredits(
             archive.tags,
             artistNamespaces,
             authorNamespaces,
         )
 
-        url = chapterTitle?.let { seriesUrl(it.series) } ?: "/reader?id=${archive.arcid}"
+        url = series?.let { seriesUrl(it) } ?: "/reader?id=${archive.arcid}"
         if (isRandom && preferences.getBoolean(REDUPE_KEY, REDUPE_DEFAULT)) url += "&ts" + System.currentTimeMillis()
-        title = chapterTitle?.series ?: archive.title
+        title = series ?: archive.title
         description = if (archive.summary.isNullOrBlank()) archive.title else archive.summary
         thumbnail_url = getThumbnailUri(archive.arcid)
         genre = archive.tags?.replace(",", ", ")
         artist = artistName
         author = authorName
-        status = if (chapterTitle == null) SManga.COMPLETED else SManga.UNKNOWN
+        status = if (series == null) SManga.COMPLETED else SManga.UNKNOWN
     }
 
     private suspend fun fetchArchives(url: HttpUrl): List<Archive> = buildList {
@@ -224,8 +225,8 @@ abstract class LANraragi : KeiSource(),
             .build()
             .toString()
             .toHttpUrl(),
-    ).filter { parseChapterTitle(it.title)?.series?.equals(series, ignoreCase = true) == true }
-        .sortedBy { parseChapterTitle(it.title)!!.number }
+    ).filter { it.seriesTitle()?.equals(series, ignoreCase = true) == true }
+        .sortedBy { it.chapterNumber() ?: Float.MAX_VALUE }
 
     override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
         val server = baseUrl.toHttpUrl()
@@ -259,7 +260,7 @@ abstract class LANraragi : KeiSource(),
 
         val (archive, archives) = if (!id.startsWith("TANK_")) {
             val archive = response.parseAs<Archive>()
-            val series = parseChapterTitle(archive.title)?.series
+            val series = archive.seriesTitle()
             archive to if (series != null) fetchSeries(series) else listOf(archive)
         } else {
             val tank = response.parseAs<Tankoubon>()
@@ -320,7 +321,7 @@ abstract class LANraragi : KeiSource(),
 
         // Supports single, single+ToC, tank, tank+ToC...
         archives?.forEach { arc ->
-            baseChapter = parseChapterTitle(arc.title)?.number ?: (baseChapter + 1F)
+            baseChapter = arc.chapterNumber() ?: (baseChapter + 1F)
 
             val baseFiles = getApiUriBuilder("/api/archives/${arc.arcid}/files").build().toString()
             val date = 1000 * (getNSTag(arc.tags, "date_added")?.first()?.toLong() ?: 0)
@@ -341,6 +342,7 @@ abstract class LANraragi : KeiSource(),
                             url = "$baseFiles#$lastStart-$nextPage"
                             chapter_number = baseChapter + "0.${i + 1}".toFloat()
                             name = "$chapter_number - ${entry.name}"
+                            scanlator = arc.chapterEdition()
                             date_upload = date
                         },
                     )
@@ -352,13 +354,14 @@ abstract class LANraragi : KeiSource(),
                     SChapter.create().apply {
                         url = baseFiles
                         chapter_number = baseChapter
-                        name = if (parseChapterTitle(arc.title) != null) {
+                        name = if (arc.chapterNumber() != null) {
                             "Chapter ${chapter_number.toString().removeSuffix(".0")}"
                         } else if (archives.size == 1) {
                             "Chapter"
                         } else {
                             "${chapter_number.toInt()} - ${arc.title}"
                         }
+                        scanlator = arc.chapterEdition()
                         date_upload = date
                     },
                 )
@@ -637,7 +640,7 @@ private fun buildNamespaceCandidates(
         }
 }.distinctBy { it.lowercase() }
 
-private fun namespaceTagValues(
+internal fun namespaceTagValues(
     tags: String?,
     namespaces: Collection<String>,
 ): List<String>? {
